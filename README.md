@@ -524,3 +524,109 @@ output "file_paths" {
   ]
 }
 ```
+
+---
+
+## 14. `data` Blocks
+
+A `data` block doesn't create anything — it **looks up** a resource that already exists
+in AWS (via an API call at plan/apply time) and exposes its attributes (`.id`, `.arn`,
+etc.) so other parts of the config can reference it. The attributes you put inside the
+block are the **search criteria** used for that lookup, not something being provisioned.
+
+> The examples below are illustrative (not tied to files in this repo) since they came up
+> while discussing lookups against existing infra in another project.
+
+### Exact-match lookup
+
+The attribute must resolve to exactly **one** resource, or Terraform errors out
+(`no matches found` / `multiple resources found`):
+
+```hcl
+data "aws_lb" "this" {
+  name = var.alb_name   # exact name match
+}
+
+data "aws_security_group" "basecamp_db" {
+  name = "postgres-db-basecamp-sg-prod"
+}
+```
+
+### Filter-block / tag-based lookup
+
+More flexible — can combine multiple criteria:
+
+```hcl
+data "aws_vpc" "this" {
+  tags = {
+    Name = "vpc-prod"
+    Env  = "prod"
+  }
+}
+
+data "aws_subnets" "app_subnet" {
+  filter {
+    name   = "tag:Name"
+    values = ["app-subnet-a", "app-subnet-b", "app-subnet-a1", "app-subnet-b1"]
+  }
+}
+```
+
+- Within one `filter { values = [...] }`, the values act as an **OR** (match any of these).
+- Multiple `filter` blocks (or multiple tag keys in `tags = {}`) act as an **AND** (must
+  match all conditions).
+- **Singular** data sources (`aws_vpc`, `aws_lb`, `aws_security_group`) require the filter
+  to narrow down to exactly one match. **Plural** ones (`aws_subnets` — note the "s") are
+  designed to return a list, which is why `app_subnet` exposes `.ids` (plural) instead of
+  `.id`.
+
+### `name = ...` is a real AWS value, not a Terraform label
+
+Easy thing to mix up: in `name = var.alb_name`, the value is the **actual name of the
+resource in AWS** (what you'd see in the console, or from `aws elbv2
+describe-load-balancers`). Terraform sends it to the AWS API to find a real resource
+matching that exact name — if nothing in AWS is named that, the lookup fails.
+
+What's *not* the AWS name is the label right after the resource type —
+the `"this"` in `data "aws_lb" "this"`. That part is a Terraform-only nickname you invent,
+used only to reference this data block elsewhere in the module (`data.aws_lb.this.arn`).
+It has no connection to AWS — renaming it to `data "aws_lb" "my_alb"` doesn't affect
+anything in AWS, you'd just need to update every `data.aws_lb.this.*` reference to
+`data.aws_lb.my_alb.*`.
+
+So, in short: **resource type** (`aws_lb`) = what kind of thing, **local label**
+(`this`) = Terraform-side nickname with no AWS meaning, **`name = ...`** = the real-world
+AWS attribute being searched on.
+
+### Why the lookup pattern differs between resources
+
+Whether you get a `name = "..."` argument, a `tags = {}` map, or a raw `filter` block
+depends on whether *that specific AWS API* treats "name" as a real attribute of the
+resource, or whether "name" is just a tag convention. Each data source's schema is
+defined individually by the provider to match what that resource's AWS API actually
+supports:
+
+- **`name = "..."` (genuine API field)** — resources like security groups, IAM roles,
+  ALBs, ECS clusters have `Name`/`GroupName` as a first-class property returned by AWS's
+  own `describe` API — not a tag. The provider exposes a direct `name` argument mapping
+  1:1 to that API parameter.
+- **`tags = {}` (no native name)** — a VPC has no "name" field in the EC2 API at all; the
+  "Name" shown in the console is just a regular tag with the reserved key `Name`. Since
+  VPCs are only identifiable by ID or tags, the provider offers `tags = {}` as a
+  convenience wrapper for "match all these tag key/value pairs."
+- **Raw `filter` block** — same underlying idea (tag matching, since e.g. subnets also
+  have no native name field) but expressed as the raw `filter` block, mirroring the EC2
+  API's actual `Filters` parameter (`Name=tag:Name,Values=...`, same shape as
+  `aws ec2 describe-subnets --filters`). Plural data sources tend to only offer this
+  generic mechanism since they need to support arbitrary/multi-value matching, whereas
+  singular ones often get friendlier shortcuts like `tags = {}`.
+
+**Rule of thumb:**
+- `name = "..."` → that AWS resource type has a true `name` attribute at the API level.
+- `tags = {}` or `filter { name = "tag:X" }` → the resource has no native name; you're
+  filtering on tags, just via two different levels of convenience the provider chose to
+  expose.
+
+When in doubt for a given data source, check its page on the
+[Terraform Registry](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) —
+the arguments listed there show exactly which of these patterns it supports.
