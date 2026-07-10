@@ -450,3 +450,77 @@ Terraform config (its own folder, separate from the main project):
    **migrate the existing state** into the new backend. Confirm, and it copies
    `terraform.tfstate` into the bucket — from that point on, all `plan`/`apply`/`destroy`
    runs read and write state from S3 instead of the local file.
+
+---
+
+## 13. Modules
+
+A module lets you package up a reusable chunk of Terraform config and call it from
+elsewhere, instead of copy-pasting the same resources everywhere. This turns a project
+into two layers:
+
+- **Root module** — the top-level config you actually run `terraform apply` from
+  (e.g. [`3-module/main.tf`](3-module/main.tf)).
+- **Child module** — a self-contained folder with its own `main.tf`, `variables.tf`, and
+  `outputs.tf`, describing a piece of infrastructure in terms of inputs (variables) and
+  outputs (e.g. [`3-module/file_creator/`](3-module/file_creator/)).
+
+### Child module — `variables.tf` and `outputs.tf`
+
+The child module declares what it needs as input (`variables.tf`) and what it exposes
+back out (`outputs.tf`), same as any variable/output, just scoped to that module:
+
+```hcl
+# file_creator/variables.tf
+variable "file1_content" {
+  description = "this is the content of file 1"
+  type        = string
+  default     = "hello from file 1"
+}
+
+variable "filename_1" {
+  type        = string
+  description = "this is the name of file 1"
+  default     = "file1.txt"
+}
+```
+
+```hcl
+# file_creator/outputs.tf
+output "file1_path" {
+  description = "this is the path to file 1"
+  value       = local_file.file1.filename
+}
+```
+
+### Root module — calling the child module
+
+In the root module, a `module` block calls the child module. `source` points at the
+child module's folder, and every other argument in the block feeds one of the child
+module's declared variables:
+
+```hcl
+# 3-module/main.tf
+module "create_files" {
+  source        = "./file_creator" # source to give the folder of the child module
+  filename_1    = "my_first_file.txt"
+  file1_content = "from file1"
+
+  filename_2    = "my_second_file.txt"
+  file2_content = "from file2"
+}
+```
+
+### Using the child module's output in the root module
+
+The root module can then define its own `output` that reaches into the child module's
+outputs via `module.<name>.<output>`:
+
+```hcl
+output "file_paths" {
+  value = [
+    module.create_files.file1_path,
+    module.create_files.file2_path
+  ]
+}
+```
