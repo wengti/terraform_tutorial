@@ -354,3 +354,99 @@ user_data = <<-EOF
   config) rather than for anything that needs to change over the instance's life. For
   ongoing setup or changes after launch, it's better to SSH in and do it manually (or move
   to a proper config-management tool if it grows beyond a few commands).
+
+---
+
+## 12. Remote Backend with AWS S3
+
+### Why move off the local backend
+
+By default, Terraform tracks everything in a local `terraform.tfstate` file sitting in
+the project folder. That file isn't just bookkeeping — it's a full record of every
+resource's attributes, and for some resources that includes values you don't want sitting
+in plaintext on a laptop or committed to git (e.g. secrets, key material, connection
+strings). It's also a single local copy: no locking, no versioning, and nothing stopping
+two people from applying at the same time and corrupting it.
+
+A **remote backend** (S3) fixes this — the state file lives in a bucket instead, can be
+encrypted at rest, versioned, and access-controlled with normal AWS IAM permissions.
+
+### Configuring the S3 backend
+
+Add a `backend "s3"` block inside the `terraform {}` block:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
+
+  backend "s3" {
+    bucket  = "my-terraform-state-bucket"
+    key     = "2-practice/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
+  }
+}
+```
+
+- **`bucket`** — the S3 bucket that will hold the state file.
+- **`key`** — the path/filename of the state file inside that bucket (useful for
+  namespacing state per project, e.g. `2-practice/terraform.tfstate`).
+- **`encrypt`** — encrypts the state file at rest.
+
+### The chicken-and-egg problem: scaffolding the bucket first
+
+You can't point a project's backend at an S3 bucket that doesn't exist yet — and you
+can't create that bucket *using* the backend you're trying to set up. So the bucket
+itself has to be created first, with a plain **local** backend, in its own standalone
+Terraform config (its own folder, separate from the main project):
+
+1. Scaffold a small, separate config whose only job is to create the S3 bucket. Just
+   like any other Terraform project, it still needs the usual `terraform {}` /
+   `provider "aws" {}` boilerplate — it runs on the default local backend since there's
+   no remote backend to point to yet:
+   ```hcl
+   terraform {
+       required_providers {
+         aws = {
+           source  = "hashicorp/aws"
+           version = "~> 6.0"
+         }
+       }
+   }
+
+   provider "aws" {
+       region = "us-east-1"
+   }
+
+   resource "aws_s3_bucket" "terraform_state" {
+     bucket = "my-terraform-state-bucket"
+
+     lifecycle {
+       prevent_destroy = true
+     }
+   }
+
+   resource "aws_s3_bucket_versioning" "terraform_state" {
+     bucket = aws_s3_bucket.terraform_state.id
+     versioning_configuration {
+       status = "Enabled"
+     }
+   }
+   ```
+   `terraform apply` this on its own first — this is a one-time, standalone step, not
+   part of the main project.
+
+2. Once the bucket exists, go back to the **actual** project (e.g. `2-practice`), add the
+   `backend "s3" {}` block shown above, and run:
+   ```bash
+   terraform init
+   ```
+   Terraform detects the backend configuration changed (local → s3) and prompts to
+   **migrate the existing state** into the new backend. Confirm, and it copies
+   `terraform.tfstate` into the bucket — from that point on, all `plan`/`apply`/`destroy`
+   runs read and write state from S3 instead of the local file.
