@@ -311,7 +311,32 @@ terraform state show <addr>   # show all attributes/values of one specific resou
 
 ---
 
-## 10. `user_data` in EC2 Instance
+## 10. `terraform refresh`
+
+```bash
+terraform refresh
+```
+
+Reconciles Terraform's **state file** with what's actually running in AWS right now,
+without changing any infrastructure and without touching your `.tf` code.
+
+- Terraform's plan/apply decisions are based on the state file, not a live query of AWS
+  every time. If something changed outside of Terraform — e.g. someone manually edited a
+  tag or resized the instance in the AWS console — the state file goes stale and no longer
+  reflects reality.
+- `terraform refresh` re-reads the real AWS resources and updates the state file to match,
+  so the next `terraform plan` compares against accurate "current" values instead of
+  outdated ones.
+- It only updates state — it will **not** revert manual changes back to what your `.tf`
+  files say. That's what `terraform apply` is for (it reconciles the other direction:
+  making AWS match the code).
+- Note: `terraform plan` and `terraform apply` already do this refresh implicitly by
+  default, so running it standalone is mainly useful when you just want to see/inspect
+  drift without planning or applying anything.
+
+---
+
+## 11. `user_data` in EC2 Instance
 
 ```hcl
 user_data = <<-EOF
